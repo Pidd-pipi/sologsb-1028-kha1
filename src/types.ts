@@ -2,6 +2,8 @@ export type ComponentStatus = 'draft' | 'review' | 'published';
 export type PreviewTheme = 'light' | 'dark';
 export type PreviewDensity = 'compact' | 'regular' | 'spacious';
 
+export type GroupId = 'specs' | 'platform' | 'a11y';
+
 export interface PropertySpec {
   id: string;
   name: string;
@@ -26,6 +28,8 @@ export interface ComponentSpec {
   name: string;
   category: string;
   status: ComponentStatus;
+  /** 组件内容的责任组；旧数据缺省在加载时补默认归属。 */
+  ownerGroup: GroupId;
   purpose: string;
   usage: string;
   properties: PropertySpec[];
@@ -47,9 +51,37 @@ export interface ComponentSnapshot {
   component: Omit<ComponentSpec, 'snapshots'>;
 }
 
+export interface RevisionConfirmation {
+  group: GroupId;
+  member: string;
+  at: string;
+}
+
+export type RevisionStatus = 'pending' | 'published' | 'rejected';
+
+/** 跨组改动不直接生效，进入待审修订；责任组与提报组共同确认后才能发布。 */
+export interface PendingRevision {
+  id: string;
+  componentId: string;
+  proposerGroup: GroupId;
+  proposer: string;
+  reason: string;
+  changedFields: string[];
+  patch: Partial<ComponentSpec>;
+  confirmations: RevisionConfirmation[];
+  status: RevisionStatus;
+  createdAt: string;
+  publishedAt?: string;
+  /** 契约修订：发布后其他待审契约修订的确认立即失效、需重新确认。 */
+  contractTouched: boolean;
+}
+
 export interface WorkspaceState {
   components: ComponentSpec[];
   selectedId: string;
+  currentGroup: GroupId;
+  currentMember: string;
+  pendingRevisions: PendingRevision[];
 }
 
 export interface ValidationIssue {

@@ -1,10 +1,11 @@
 import { LitElement, css, html, nothing, type TemplateResult } from 'lit';
 import { repeat } from 'lit/directives/repeat.js';
 import { diffAgainstSnapshot } from './diff';
-import { SpecStore } from './store';
-import type { ComponentExample, ComponentSpec, PreviewDensity, PreviewTheme, PropertySpec, ValidationIssue } from './types';
+import { FIELD_LABELS, FIELD_OWNERS, GROUP_LABELS, GROUP_MEMBERS, requiredGroupsFor } from './groups';
+import { SpecStore, type RevisionActionResult } from './store';
+import type { ComponentExample, ComponentSpec, GroupId, PendingRevision, PreviewDensity, PreviewTheme, PropertySpec, ValidationIssue } from './types';
 
-type EditorTab = 'overview' | 'api' | 'accessibility' | 'examples' | 'history';
+type EditorTab = 'overview' | 'api' | 'accessibility' | 'examples' | 'revisions' | 'history';
 
 export class SpecA11yWorkbench extends LitElement {
   static properties = {
@@ -114,6 +115,21 @@ export class SpecA11yWorkbench extends LitElement {
     .after { color: var(--spectrum-green-900); white-space: pre-wrap; }
     pre { white-space: pre-wrap; word-break: break-word; background: #202020; color: #f5f5f5; padding: 12px; border-radius: 8px; font-size: 12px; }
     .search-empty { padding: 20px 8px; color: var(--spectrum-gray-700); font-size: 13px; }
+    .group-switcher { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--spectrum-gray-700); white-space: nowrap; }
+    .group-switcher select { width: auto; padding: 6px 8px; font-size: 12px; border-radius: 8px; }
+    .panel-badge { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+    .panel-badge .pill { font-size: 11px; }
+    .panel-note { font-size: 11px; color: var(--spectrum-gray-700); }
+    .revision-hint { margin: 0 0 14px; font-size: 12px; color: var(--spectrum-gray-700); line-height: 1.6; }
+    .revision-list { display: grid; gap: 12px; }
+    .revision-card { border: 1px solid var(--spectrum-gray-300); border-radius: 12px; padding: 14px; background: var(--spectrum-gray-75, var(--spectrum-gray-100)); display: grid; gap: 9px; }
+    .revision-card.published { opacity: .75; }
+    .revision-card.rejected { opacity: .6; }
+    .revision-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    .revision-fields, .revision-confirms { display: flex; flex-wrap: wrap; gap: 6px; }
+    .revision-reason { margin: 0; font-size: 12px; color: var(--spectrum-gray-700); }
+    .revision-note { margin: 0; font-size: 12px; color: var(--spectrum-orange-700); }
+    .revision-card .actions { justify-content: flex-start; }
     .footer-hint { position: fixed; bottom: 10px; left: 50%; transform: translateX(-50%); z-index: 30; background: #202020; color: white; border-radius: 999px; padding: 6px 12px; font-size: 11px; opacity: .9; }
     sp-toast { position: fixed; right: 18px; bottom: 18px; z-index: 50; }
     @media (max-width: 1180px) {
@@ -139,16 +155,26 @@ export class SpecA11yWorkbench extends LitElement {
   connectedCallback() {
     super.connectedCallback();
     this.store.addEventListener('change', this.onStoreChange);
+    this.store.addEventListener('persist-error', this.onPersistError);
     window.addEventListener('keydown', this.onKeyDown);
   }
 
   disconnectedCallback() {
     this.store.removeEventListener('change', this.onStoreChange);
+    this.store.removeEventListener('persist-error', this.onPersistError);
     window.removeEventListener('keydown', this.onKeyDown);
   }
 
   private onStoreChange = () => {
     this.requestUpdate();
+    if (this.store.revisionNotice) {
+      this.flash(this.store.revisionNotice);
+      this.store.revisionNotice = null;
+    }
+  };
+
+  private onPersistError = () => {
+    this.flash('本地保存失败：内容已保留为草稿，请检查浏览器存储');
   };
 
   private onKeyDown = (event: KeyboardEvent) => {
@@ -174,7 +200,7 @@ export class SpecA11yWorkbench extends LitElement {
       this.store.addComponent();
       return;
     }
-    const tabMap: Record<string, EditorTab> = { '1': 'overview', '2': 'api', '3': 'accessibility', '4': 'examples', '5': 'history' };
+    const tabMap: Record<string, EditorTab> = { '1': 'overview', '2': 'api', '3': 'accessibility', '4': 'examples', '5': 'revisions', '6': 'history' };
     if (event.altKey && tabMap[event.key]) {
       event.preventDefault();
       this.tab = tabMap[event.key];
@@ -201,6 +227,17 @@ export class SpecA11yWorkbench extends LitElement {
                 .value=${this.query}
                 @input=${(event: Event) => { this.query = (event.currentTarget as HTMLInputElement & { value?: string }).value ?? ''; }}
               ></sp-search>
+              <label class="group-switcher" title="切换当前责任组；跨组修改会进入待审修订">
+                <span>责任组</span>
+                <select aria-label="切换责任组" .value=${this.store.state.currentGroup} @change=${(event: Event) => this.store.setCurrentGroup((event.currentTarget as HTMLSelectElement).value as GroupId)}>
+                  <option value="specs">规范组</option>
+                  <option value="platform">平台组</option>
+                  <option value="a11y">无障碍组</option>
+                </select>
+                <select aria-label="切换成员" .value=${this.store.state.currentMember} @change=${(event: Event) => this.store.setCurrentMember((event.currentTarget as HTMLSelectElement).value)}>
+                  ${GROUP_MEMBERS[this.store.state.currentGroup].map((member) => html`<option value=${member}>${member}</option>`)}
+                </select>
+              </label>
               <sp-button variant="secondary" ?disabled=${!this.store.canUndo} @click=${() => this.store.undo()}>撤销</sp-button>
               <sp-button variant="secondary" ?disabled=${!this.store.canRedo} @click=${() => this.store.redo()}>重做</sp-button>
               <sp-button variant="accent" @click=${() => { this.store.createSnapshot('工具栏保存'); this.flash('版本已保存'); }}>保存版本</sp-button>
@@ -220,7 +257,8 @@ export class SpecA11yWorkbench extends LitElement {
                       <span>${item.name}</span>
                       <span class="pill ${item.status}">${this.statusLabel(item.status)}</span>
                     </span>
-                    <span class="item-meta">${item.category} · ${item.properties.length} 个属性 · ${item.examples.length} 个示例</span>
+                    <span class="item-meta">${GROUP_LABELS[item.ownerGroup]} · ${item.category} · ${item.properties.length} 个属性 · ${item.examples.length} 个示例</span>
+                    ${this.pendingCount(item.id) ? html`<span class="pill review">${this.pendingCount(item.id)} 项待审修订</span>` : nothing}
                   </button>
                 `) : html`<div class="search-empty">没有匹配的组件。可尝试属性名、键盘行为或代码文本。</div>`}
               </div>
@@ -232,7 +270,7 @@ export class SpecA11yWorkbench extends LitElement {
             </aside>
           </div>
           ${this.toast ? html`<sp-toast open variant="positive" timeout="3000">${this.toast}</sp-toast>` : nothing}
-          <div class="footer-hint">⌘/Ctrl+Z 撤销 · ⇧⌘/Ctrl+Z 重做 · ⌘/Ctrl+K 搜索 · Alt+1–5 切换面板</div>
+          <div class="footer-hint">⌘/Ctrl+Z 撤销 · ⇧⌘/Ctrl+Z 重做 · ⌘/Ctrl+K 搜索 · Alt+1–6 切换面板</div>
         </div>
       </sp-theme>
     `;
@@ -244,6 +282,7 @@ export class SpecA11yWorkbench extends LitElement {
         <div>
           <h2>${component.name}</h2>
           <p>${component.purpose}</p>
+          <span class="pill">责任组 · ${GROUP_LABELS[component.ownerGroup]}</span>
         </div>
         <div class="actions">
           <select aria-label="组件状态" .value=${component.status} @change=${(event: Event) => this.store.updateComponent({ status: (event.currentTarget as HTMLSelectElement).value as ComponentSpec['status'] })}>
@@ -260,12 +299,15 @@ export class SpecA11yWorkbench extends LitElement {
         ${this.renderTab('api', '2 属性与状态')}
         ${this.renderTab('accessibility', '3 无障碍')}
         ${this.renderTab('examples', '4 示例')}
-        ${this.renderTab('history', '5 版本')}
+        ${this.renderTab('revisions', `5 修订${this.pendingCount(component.id) ? ` (${this.pendingCount(component.id)})` : ''}`)}
+        ${this.renderTab('history', '6 版本')}
       </div>
+      <p class="revision-hint">各字段仅责任组可直接修改；跨组改动自动进入待审修订，责任组与提报组共同确认后才能发布。</p>
       ${this.tab === 'overview' ? this.renderOverview(component) : nothing}
       ${this.tab === 'api' ? this.renderApi(component) : nothing}
       ${this.tab === 'accessibility' ? this.renderAccessibility(component) : nothing}
       ${this.tab === 'examples' ? this.renderExamples(component) : nothing}
+      ${this.tab === 'revisions' ? this.renderRevisions(component) : nothing}
       ${this.tab === 'history' ? this.renderHistory(component) : nothing}
     `;
   }
@@ -277,6 +319,7 @@ export class SpecA11yWorkbench extends LitElement {
   private renderOverview(component: ComponentSpec): TemplateResult {
     return html`
       <section class="panel" aria-label="组件概述">
+        ${this.renderPanelBadge('specs')}
         <div class="form-grid">
           <label class="field"><span>组件名称</span><input type="text" .value=${component.name} @change=${(event: Event) => this.store.updateComponent({ name: (event.currentTarget as HTMLInputElement).value })} /></label>
           <label class="field"><span>分类</span><input type="text" .value=${component.category} @change=${(event: Event) => this.store.updateComponent({ category: (event.currentTarget as HTMLInputElement).value })} /></label>
@@ -291,6 +334,7 @@ export class SpecA11yWorkbench extends LitElement {
   private renderApi(component: ComponentSpec): TemplateResult {
     return html`
       <section class="panel">
+        ${this.renderPanelBadge('platform')}
         <div class="property-head">
           <h2>属性契约</h2>
           <sp-button size="s" variant="secondary" @click=${() => this.store.addProperty()}>新增属性</sp-button>
@@ -327,6 +371,7 @@ export class SpecA11yWorkbench extends LitElement {
   private renderAccessibility(component: ComponentSpec): TemplateResult {
     return html`
       <section class="panel">
+        ${this.renderPanelBadge('a11y')}
         <div class="form-grid">
           <label class="field full"><span>键盘行为</span><textarea .value=${component.keyboardBehavior} @change=${(event: Event) => this.store.updateComponent({ keyboardBehavior: (event.currentTarget as HTMLTextAreaElement).value }, true)}></textarea></label>
           <label class="field full"><span>读屏说明</span><textarea .value=${component.screenReader} @change=${(event: Event) => this.store.updateComponent({ screenReader: (event.currentTarget as HTMLTextAreaElement).value })}></textarea></label>
@@ -339,6 +384,7 @@ export class SpecA11yWorkbench extends LitElement {
   private renderExamples(component: ComponentSpec): TemplateResult {
     return html`
       <section class="panel">
+        ${this.renderPanelBadge('platform')}
         <div class="property-head">
           <h2>关联示例</h2>
           <sp-button size="s" variant="secondary" @click=${() => this.store.addExample()}>新增示例</sp-button>
@@ -380,6 +426,72 @@ export class SpecA11yWorkbench extends LitElement {
         </div>
       </article>
     `;
+  }
+
+  private renderPanelBadge(group: GroupId): TemplateResult {
+    return html`<div class="panel-badge"><span class="pill">责任组 · ${GROUP_LABELS[group]}</span><span class="panel-note">仅${GROUP_LABELS[group]}成员可直接修改，其他组改动进入待审修订</span></div>`;
+  }
+
+  private renderRevisions(component: ComponentSpec): TemplateResult {
+    const revisions = this.store.state.pendingRevisions.filter((item) => item.componentId === component.id);
+    return html`
+      <section class="panel">
+        <div class="property-head">
+          <h2>待审修订</h2>
+        </div>
+        <p class="revision-hint">跨组修改不直接生效；内容责任组与提报组共同确认后才能发布。属性契约修订一旦发布，其他待审契约修订的确认立即失效、需重新确认，依赖示例需重新验证，不能沿用旧结论。</p>
+        ${revisions.length ? html`<div class="revision-list">${revisions.map((revision) => this.renderRevision(revision))}</div>` : html`<div class="empty">暂无待审修订。跨组编辑属性、无障碍说明或组件内容后，修订会出现在这里。</div>`}
+      </section>
+    `;
+  }
+
+  private renderRevision(revision: PendingRevision): TemplateResult {
+    const required = requiredGroupsFor(revision);
+    const confirmedGroups = new Set(revision.confirmations.map((item) => item.group));
+    const currentGroup = this.store.state.currentGroup;
+    const canConfirm = revision.status === 'pending'
+      && required.includes(currentGroup)
+      && !confirmedGroups.has(currentGroup);
+    const canPublish = revision.status === 'pending' && required.every((group) => confirmedGroups.has(group));
+    const canWithdraw = revision.status === 'pending' && revision.proposerGroup === currentGroup;
+    const canReject = revision.status === 'pending' && required.includes(currentGroup);
+    return html`
+      <article class="revision-card ${revision.status}">
+        <div class="revision-head">
+          <strong>${GROUP_LABELS[revision.proposerGroup]} · ${revision.proposer}</strong>
+          <span class="pill ${revision.status === 'pending' ? 'review' : revision.status === 'published' ? 'published' : ''}">
+            ${revision.status === 'pending' ? '待审' : revision.status === 'published' ? '已发布' : '已拒绝'}
+          </span>
+        </div>
+        <div class="revision-fields">
+          ${revision.changedFields.map((field) => html`<span class="pill">${FIELD_LABELS[field] ?? field} · ${GROUP_LABELS[FIELD_OWNERS[field] ?? revision.proposerGroup]}</span>`)}
+        </div>
+        <p class="revision-reason">${revision.reason} · ${new Date(revision.createdAt).toLocaleString('zh-CN')}</p>
+        ${revision.contractTouched ? html`<div class="issue info"><strong>契约修订</strong>发布后其他待审契约修订的确认将失效并重算，依赖示例需重新验证，不能沿用旧结论。</div>` : nothing}
+        <div class="revision-confirms">
+          ${required.map((group) => html`<span class="pill ${confirmedGroups.has(group) ? 'published' : ''}">
+            ${GROUP_LABELS[group]}${confirmedGroups.has(group) ? ` ✓ ${revision.confirmations.find((item) => item.group === group)?.member ?? ''}` : ' 未确认'}
+          </span>`)}
+        </div>
+        ${revision.status === 'pending' ? html`
+          <div class="actions">
+            <sp-button size="s" variant="secondary" ?disabled=${!canConfirm} @click=${() => this.handleResult(this.store.confirmRevision(revision.id), '已确认修订')}>确认</sp-button>
+            <sp-button size="s" variant="accent" ?disabled=${!canPublish} @click=${() => this.handleResult(this.store.publishRevision(revision.id), '修订已发布')}>发布</sp-button>
+            <sp-button size="s" variant="secondary" ?disabled=${!canWithdraw} @click=${() => this.handleResult(this.store.withdrawRevision(revision.id), '修订已撤回')}>撤回</sp-button>
+            <sp-button size="s" variant="secondary" ?disabled=${!canReject} @click=${() => this.handleResult(this.store.rejectRevision(revision.id), '修订已拒绝')}>拒绝</sp-button>
+          </div>
+          ${!canConfirm && !canPublish ? html`<p class="revision-note">当前为${GROUP_LABELS[currentGroup]}，不是该修订的责任组；请切换到对应责任组后确认或发布。</p>` : nothing}
+        ` : nothing}
+      </article>
+    `;
+  }
+
+  private handleResult(result: RevisionActionResult, successMessage: string) {
+    this.flash(result.ok ? successMessage : (result.error ?? '操作失败，内容已回滚并保留草稿'));
+  }
+
+  private pendingCount(componentId: string): number {
+    return this.store.state.pendingRevisions.filter((item) => item.componentId === componentId && item.status === 'pending').length;
   }
 
   private renderHistory(component: ComponentSpec): TemplateResult {
