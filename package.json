@@ -7,6 +7,7 @@
     "dev": "vite --host 0.0.0.0",
     "build": "tsc --noEmit && vite build",
     "typecheck": "tsc --noEmit",
+    "verify": "esbuild scripts/verify-workflow.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/verify-workflow.mjs && node node_modules/.cache/verify-workflow.mjs",
     "preview": "vite preview --host 0.0.0.0"
   },
   "dependencies": {

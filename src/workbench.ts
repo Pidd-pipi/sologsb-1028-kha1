@@ -1,10 +1,22 @@
 import { LitElement, css, html, nothing, type TemplateResult } from 'lit';
 import { repeat } from 'lit/directives/repeat.js';
 import { diffAgainstSnapshot } from './diff';
+import { canPublish, fieldLabel, SECTION_LABELS, TEAM_LABELS, validConfirmations } from './revision';
 import { SpecStore } from './store';
-import type { ComponentExample, ComponentSpec, PreviewDensity, PreviewTheme, PropertySpec, ValidationIssue } from './types';
+import type {
+  AuditAction,
+  ComponentExample,
+  ComponentSpec,
+  PendingRevision,
+  PreviewDensity,
+  PreviewTheme,
+  PropertySpec,
+  SectionKey,
+  TeamId,
+  ValidationIssue
+} from './types';
 
-type EditorTab = 'overview' | 'api' | 'accessibility' | 'examples' | 'history';
+type EditorTab = 'overview' | 'api' | 'accessibility' | 'examples' | 'history' | 'revision';
 
 export class SpecA11yWorkbench extends LitElement {
   static properties = {
@@ -13,6 +25,7 @@ export class SpecA11yWorkbench extends LitElement {
     previewTheme: { state: true },
     previewDensity: { state: true },
     toast: { state: true },
+    toastVariant: { state: true },
     showValidation: { state: true }
   };
 
@@ -22,6 +35,7 @@ export class SpecA11yWorkbench extends LitElement {
   private previewTheme: PreviewTheme = 'light';
   private previewDensity: PreviewDensity = 'regular';
   private toast = '';
+  private toastVariant: 'positive' | 'negative' = 'positive';
   private showValidation = true;
   private toastTimer?: number;
 
@@ -46,6 +60,8 @@ export class SpecA11yWorkbench extends LitElement {
     .brand p { margin: 3px 0 0; color: var(--spectrum-gray-700); font-size: 12px; }
     .toolbar { display: flex; align-items: center; gap: 8px; flex: 1; }
     .toolbar sp-search { min-width: 280px; flex: 1; max-width: 520px; }
+    .team-switch { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--spectrum-gray-800); white-space: nowrap; }
+    .team-switch select { width: auto; padding: 6px 8px; }
     .save-state { color: var(--spectrum-gray-700); font-size: 12px; white-space: nowrap; }
     .layout {
       display: grid; grid-template-columns: minmax(245px, 290px) minmax(0, 1fr) minmax(315px, 390px);
@@ -67,6 +83,7 @@ export class SpecA11yWorkbench extends LitElement {
     .pill { display: inline-flex; align-items: center; border-radius: 999px; padding: 2px 7px; font-size: 10px; font-weight: 700; background: var(--spectrum-gray-300); }
     .pill.published { background: var(--spectrum-green-300); }
     .pill.review { background: var(--spectrum-orange-300); }
+    .pill.revision { background: var(--spectrum-orange-200, #ffd9b3); color: var(--spectrum-gray-900); }
     .main { min-width: 0; padding: 22px; }
     .title-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 15px; margin-bottom: 16px; }
     .title-row h2 { font-size: 28px; margin: 0; letter-spacing: -.035em; }
@@ -76,6 +93,7 @@ export class SpecA11yWorkbench extends LitElement {
     .tab { border: 0; border-radius: 8px; background: transparent; color: var(--spectrum-gray-800); padding: 8px 12px; font: inherit; cursor: pointer; white-space: nowrap; }
     .tab[aria-selected='true'] { background: var(--spectrum-gray-50); box-shadow: 0 1px 4px rgb(0 0 0 / .12); font-weight: 700; }
     .panel { border: 1px solid var(--spectrum-gray-300); border-radius: 16px; background: var(--spectrum-gray-50); padding: 20px; box-shadow: 0 8px 26px rgb(20 30 50 / .06); }
+    .panel h3 { font-size: 13px; margin: 16px 0 8px; }
     .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
     .field { display: grid; gap: 7px; min-width: 0; }
     .field.full { grid-column: 1 / -1; }
@@ -93,6 +111,27 @@ export class SpecA11yWorkbench extends LitElement {
     .property-head strong, .example-head strong { flex: 1; }
     .inline { display: flex; align-items: center; gap: 8px; font-size: 12px; }
     .empty { padding: 28px; border: 1px dashed var(--spectrum-gray-400); border-radius: 12px; text-align: center; color: var(--spectrum-gray-700); }
+    .owner-tag {
+      display: inline-flex; align-items: center; gap: 4px; border-radius: 999px; padding: 3px 9px;
+      font-size: 11px; font-weight: 700; background: var(--spectrum-green-200, #d9f2e2); white-space: nowrap;
+    }
+    .owner-tag.cross { background: var(--spectrum-orange-200, #ffe0bd); }
+    .revision-banner {
+      display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+      border: 1px solid var(--spectrum-orange-600); border-radius: 12px;
+      background: var(--spectrum-orange-100, #fff1e0); padding: 10px 14px; margin-bottom: 14px; font-size: 13px;
+    }
+    .revision-banner button { border: 0; background: transparent; color: var(--spectrum-blue-800); text-decoration: underline; cursor: pointer; font: inherit; padding: 0; }
+    .revision-meta { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; font-size: 12px; color: var(--spectrum-gray-700); margin-bottom: 6px; }
+    .confirm-list { display: grid; gap: 6px; margin: 4px 0 8px; }
+    .confirm-row { display: flex; justify-content: space-between; gap: 8px; border: 1px solid var(--spectrum-gray-300); border-radius: 8px; padding: 8px 10px; font-size: 12px; }
+    .confirm-row.done { border-color: var(--spectrum-green-600); background: var(--spectrum-green-100, #e6f6ec); }
+    .hint { font-size: 12px; color: var(--spectrum-gray-700); margin: 8px 0; }
+    .audit-list { display: grid; gap: 8px; max-height: 340px; overflow: auto; }
+    .audit-entry { display: grid; gap: 3px; border-left: 3px solid var(--spectrum-gray-500); background: var(--spectrum-gray-100); border-radius: 6px; padding: 8px 10px; font-size: 12px; }
+    .audit-entry.publish { border-color: var(--spectrum-green-600); }
+    .audit-entry.rollback, .audit-entry.invalidate { border-color: var(--spectrum-red-600); }
+    .audit-meta { color: var(--spectrum-gray-700); font-size: 11px; }
     .inspector { border-left: 1px solid var(--spectrum-gray-300); padding: 18px; display: grid; align-content: start; gap: 15px; }
     .preview { border-radius: 14px; border: 1px solid var(--spectrum-gray-400); padding: 18px; display: grid; place-items: center; min-height: 150px; transition: .2s; }
     .preview.dark { background: #1b1b1b; color: #f5f5f5; border-color: #444; }
@@ -110,8 +149,8 @@ export class SpecA11yWorkbench extends LitElement {
     .diff { display: grid; gap: 7px; margin-top: 9px; }
     .diff-row { border: 1px solid var(--spectrum-gray-300); border-radius: 8px; padding: 9px; font-size: 11px; }
     .diff-row b { display: block; margin-bottom: 4px; text-transform: capitalize; }
-    .before { color: var(--spectrum-red-800); white-space: pre-wrap; }
-    .after { color: var(--spectrum-green-900); white-space: pre-wrap; }
+    .before { color: var(--spectrum-red-800); white-space: pre-wrap; word-break: break-word; }
+    .after { color: var(--spectrum-green-900); white-space: pre-wrap; word-break: break-word; }
     pre { white-space: pre-wrap; word-break: break-word; background: #202020; color: #f5f5f5; padding: 12px; border-radius: 8px; font-size: 12px; }
     .search-empty { padding: 20px 8px; color: var(--spectrum-gray-700); font-size: 13px; }
     .footer-hint { position: fixed; bottom: 10px; left: 50%; transform: translateX(-50%); z-index: 30; background: #202020; color: white; border-radius: 999px; padding: 6px 12px; font-size: 11px; opacity: .9; }
@@ -139,16 +178,28 @@ export class SpecA11yWorkbench extends LitElement {
   connectedCallback() {
     super.connectedCallback();
     this.store.addEventListener('change', this.onStoreChange);
+    this.store.addEventListener('store-notice', this.onStoreNotice);
+    this.store.addEventListener('store-error', this.onStoreError);
     window.addEventListener('keydown', this.onKeyDown);
   }
 
   disconnectedCallback() {
     this.store.removeEventListener('change', this.onStoreChange);
+    this.store.removeEventListener('store-notice', this.onStoreNotice);
+    this.store.removeEventListener('store-error', this.onStoreError);
     window.removeEventListener('keydown', this.onKeyDown);
   }
 
   private onStoreChange = () => {
     this.requestUpdate();
+  };
+
+  private onStoreNotice = (event: Event) => {
+    this.flash((event as CustomEvent<string>).detail);
+  };
+
+  private onStoreError = (event: Event) => {
+    this.flash((event as CustomEvent<string>).detail, 'negative');
   };
 
   private onKeyDown = (event: KeyboardEvent) => {
@@ -160,8 +211,7 @@ export class SpecA11yWorkbench extends LitElement {
     }
     if (modifier && event.key.toLowerCase() === 's') {
       event.preventDefault();
-      this.store.createSnapshot('键盘保存');
-      this.flash('已创建版本快照');
+      if (this.store.createSnapshot('键盘保存')) this.flash('已创建版本快照');
       return;
     }
     if (modifier && event.key.toLowerCase() === 'k') {
@@ -174,7 +224,7 @@ export class SpecA11yWorkbench extends LitElement {
       this.store.addComponent();
       return;
     }
-    const tabMap: Record<string, EditorTab> = { '1': 'overview', '2': 'api', '3': 'accessibility', '4': 'examples', '5': 'history' };
+    const tabMap: Record<string, EditorTab> = { '1': 'overview', '2': 'api', '3': 'accessibility', '4': 'examples', '5': 'history', '6': 'revision' };
     if (event.altKey && tabMap[event.key]) {
       event.preventDefault();
       this.tab = tabMap[event.key];
@@ -192,7 +242,7 @@ export class SpecA11yWorkbench extends LitElement {
           <header>
             <div class="brand">
               <h1>Component Contract Studio</h1>
-              <p>规范、无障碍与示例失效追踪</p>
+              <p>规范、无障碍与平台三组协作 · 权限隔离修订</p>
             </div>
             <div class="toolbar">
               <sp-search
@@ -201,9 +251,17 @@ export class SpecA11yWorkbench extends LitElement {
                 .value=${this.query}
                 @input=${(event: Event) => { this.query = (event.currentTarget as HTMLInputElement & { value?: string }).value ?? ''; }}
               ></sp-search>
+              <label class="team-switch">
+                <span>当前小组</span>
+                <select aria-label="当前小组" .value=${this.store.state.currentTeam} @change=${(event: Event) => this.store.setTeam((event.currentTarget as HTMLSelectElement).value as TeamId)}>
+                  <option value="spec">规范组</option>
+                  <option value="a11y">无障碍组</option>
+                  <option value="platform">平台组</option>
+                </select>
+              </label>
               <sp-button variant="secondary" ?disabled=${!this.store.canUndo} @click=${() => this.store.undo()}>撤销</sp-button>
               <sp-button variant="secondary" ?disabled=${!this.store.canRedo} @click=${() => this.store.redo()}>重做</sp-button>
-              <sp-button variant="accent" @click=${() => { this.store.createSnapshot('工具栏保存'); this.flash('版本已保存'); }}>保存版本</sp-button>
+              <sp-button variant="accent" @click=${() => { if (this.store.createSnapshot('工具栏保存')) this.flash('版本已保存'); }}>保存版本</sp-button>
               <span class="save-state">本地自动保存 · ${selected?.revision ?? 0} 版</span>
             </div>
           </header>
@@ -220,7 +278,10 @@ export class SpecA11yWorkbench extends LitElement {
                       <span>${item.name}</span>
                       <span class="pill ${item.status}">${this.statusLabel(item.status)}</span>
                     </span>
-                    <span class="item-meta">${item.category} · ${item.properties.length} 个属性 · ${item.examples.length} 个示例</span>
+                    <span class="item-meta">
+                      ${item.category} · ${item.properties.length} 个属性 · ${item.examples.length} 个示例
+                      ${item.pendingRevision ? html`<span class="pill revision">待审修订</span>` : nothing}
+                    </span>
                   </button>
                 `) : html`<div class="search-empty">没有匹配的组件。可尝试属性名、键盘行为或代码文本。</div>`}
               </div>
@@ -231,8 +292,8 @@ export class SpecA11yWorkbench extends LitElement {
               ${this.renderValidation(selectedIssues)}
             </aside>
           </div>
-          ${this.toast ? html`<sp-toast open variant="positive" timeout="3000">${this.toast}</sp-toast>` : nothing}
-          <div class="footer-hint">⌘/Ctrl+Z 撤销 · ⇧⌘/Ctrl+Z 重做 · ⌘/Ctrl+K 搜索 · Alt+1–5 切换面板</div>
+          ${this.toast ? html`<sp-toast open variant=${this.toastVariant} timeout="3000">${this.toast}</sp-toast>` : nothing}
+          <div class="footer-hint">⌘/Ctrl+Z 撤销 · ⇧⌘/Ctrl+Z 重做 · ⌘/Ctrl+K 搜索 · Alt+1–6 切换面板 · Alt+N 新建</div>
         </div>
       </sp-theme>
     `;
@@ -246,27 +307,43 @@ export class SpecA11yWorkbench extends LitElement {
           <p>${component.purpose}</p>
         </div>
         <div class="actions">
-          <select aria-label="组件状态" .value=${component.status} @change=${(event: Event) => this.store.updateComponent({ status: (event.currentTarget as HTMLSelectElement).value as ComponentSpec['status'] })}>
+          <select aria-label="组件状态（归属规范组）" .value=${component.status} @change=${(event: Event) => this.store.updateComponent({ status: (event.currentTarget as HTMLSelectElement).value as ComponentSpec['status'] })}>
             <option value="draft">草稿</option>
             <option value="review">待审</option>
             <option value="published">已发布</option>
           </select>
-          <sp-button variant="secondary" @click=${() => this.store.createSnapshot('编辑器保存')}>保存快照</sp-button>
-          ${this.hasStaleExamples(component) ? html`<sp-button variant="accent" @click=${() => { this.store.migrateExamples(); this.flash('示例已迁移到当前契约'); }}>迁移示例</sp-button>` : nothing}
+          <sp-button variant="secondary" @click=${() => { if (this.store.createSnapshot('编辑器保存')) this.flash('版本已保存'); }}>保存快照</sp-button>
+          ${this.hasStaleExamples(component) ? html`<sp-button variant="accent" @click=${() => { if (this.store.migrateExamples()) this.flash('示例已迁移到当前契约'); }}>迁移示例</sp-button>` : nothing}
         </div>
       </div>
+      ${this.renderRevisionBanner(component)}
       <div class="tabs" role="tablist" aria-label="编辑区域">
         ${this.renderTab('overview', '1 概述')}
         ${this.renderTab('api', '2 属性与状态')}
         ${this.renderTab('accessibility', '3 无障碍')}
         ${this.renderTab('examples', '4 示例')}
         ${this.renderTab('history', '5 版本')}
+        ${this.renderTab('revision', '6 修订与留痕')}
       </div>
       ${this.tab === 'overview' ? this.renderOverview(component) : nothing}
       ${this.tab === 'api' ? this.renderApi(component) : nothing}
       ${this.tab === 'accessibility' ? this.renderAccessibility(component) : nothing}
       ${this.tab === 'examples' ? this.renderExamples(component) : nothing}
       ${this.tab === 'history' ? this.renderHistory(component) : nothing}
+      ${this.tab === 'revision' ? this.renderRevision(component) : nothing}
+    `;
+  }
+
+  private renderRevisionBanner(component: ComponentSpec): TemplateResult | typeof nothing {
+    const revision = component.pendingRevision;
+    if (!revision) return nothing;
+    const confirmed = validConfirmations(revision).length;
+    return html`
+      <div class="revision-banner" role="status">
+        <strong>待审修订进行中</strong>
+        <span>${TEAM_LABELS[revision.proposer]} 发起 · 需 ${revision.requiredTeams.map((team) => TEAM_LABELS[team]).join('、')} 确认 · 已确认 ${confirmed}/${revision.requiredTeams.length}</span>
+        <button @click=${() => { this.tab = 'revision'; }}>查看修订</button>
+      </div>
     `;
   }
 
@@ -274,15 +351,21 @@ export class SpecA11yWorkbench extends LitElement {
     return html`<button class="tab" role="tab" aria-selected=${this.tab === tab} @click=${() => { this.tab = tab; }}>${label}</button>`;
   }
 
+  private ownerTag(component: ComponentSpec, section: SectionKey): TemplateResult {
+    const owner = component.owners[section];
+    const cross = owner !== this.store.state.currentTeam;
+    return html`<span class="owner-tag ${cross ? 'cross' : ''}">责任组：${TEAM_LABELS[owner]}${cross ? ' · 你的修改将转为待审修订' : ''}</span>`;
+  }
+
   private renderOverview(component: ComponentSpec): TemplateResult {
     return html`
       <section class="panel" aria-label="组件概述">
+        <div class="property-head"><h2>组件概述</h2>${this.ownerTag(component, 'component')}</div>
         <div class="form-grid">
           <label class="field"><span>组件名称</span><input type="text" .value=${component.name} @change=${(event: Event) => this.store.updateComponent({ name: (event.currentTarget as HTMLInputElement).value })} /></label>
           <label class="field"><span>分类</span><input type="text" .value=${component.category} @change=${(event: Event) => this.store.updateComponent({ category: (event.currentTarget as HTMLInputElement).value })} /></label>
           <label class="field full"><span>用途</span><textarea .value=${component.purpose} @change=${(event: Event) => this.store.updateComponent({ purpose: (event.currentTarget as HTMLTextAreaElement).value })}></textarea></label>
           <label class="field full"><span>使用规则</span><textarea .value=${component.usage} @change=${(event: Event) => this.store.updateComponent({ usage: (event.currentTarget as HTMLTextAreaElement).value })}></textarea></label>
-          <label class="field full"><span>禁用场景</span><textarea .value=${component.disabledScenarios} @change=${(event: Event) => this.store.updateComponent({ disabledScenarios: (event.currentTarget as HTMLTextAreaElement).value })}></textarea></label>
         </div>
       </section>
     `;
@@ -293,14 +376,16 @@ export class SpecA11yWorkbench extends LitElement {
       <section class="panel">
         <div class="property-head">
           <h2>属性契约</h2>
+          ${this.ownerTag(component, 'properties')}
           <sp-button size="s" variant="secondary" @click=${() => this.store.addProperty()}>新增属性</sp-button>
         </div>
+        <p class="hint">属性契约一旦更新，待审修订的已有确认立即失效并重算，依赖示例不能沿用旧结论。</p>
         <div class="property-list">
           ${component.properties.length ? repeat(component.properties, (item) => item.id, (property) => this.renderProperty(property)) : html`<div class="empty">尚未定义属性。</div>`}
         </div>
         <div class="form-grid" style="margin-top: 18px">
           <label class="field full"><span>状态说明</span><textarea .value=${component.states} @change=${(event: Event) => this.store.updateComponent({ states: (event.currentTarget as HTMLTextAreaElement).value })}></textarea></label>
-          <label class="field full"><span>交互签名（修改后会标记关联示例失效）</span><textarea .value=${component.interactionSignature} @change=${(event: Event) => this.store.updateComponent({ interactionSignature: (event.currentTarget as HTMLTextAreaElement).value }, true)}></textarea></label>
+          <label class="field full"><span>交互签名（属于属性契约，修改后依赖示例失效）</span><textarea .value=${component.interactionSignature} @change=${(event: Event) => this.store.updateComponent({ interactionSignature: (event.currentTarget as HTMLTextAreaElement).value })}></textarea></label>
         </div>
       </section>
     `;
@@ -327,8 +412,9 @@ export class SpecA11yWorkbench extends LitElement {
   private renderAccessibility(component: ComponentSpec): TemplateResult {
     return html`
       <section class="panel">
+        <div class="property-head"><h2>无障碍说明</h2>${this.ownerTag(component, 'accessibility')}</div>
         <div class="form-grid">
-          <label class="field full"><span>键盘行为</span><textarea .value=${component.keyboardBehavior} @change=${(event: Event) => this.store.updateComponent({ keyboardBehavior: (event.currentTarget as HTMLTextAreaElement).value }, true)}></textarea></label>
+          <label class="field full"><span>键盘行为</span><textarea .value=${component.keyboardBehavior} @change=${(event: Event) => this.store.updateComponent({ keyboardBehavior: (event.currentTarget as HTMLTextAreaElement).value })}></textarea></label>
           <label class="field full"><span>读屏说明</span><textarea .value=${component.screenReader} @change=${(event: Event) => this.store.updateComponent({ screenReader: (event.currentTarget as HTMLTextAreaElement).value })}></textarea></label>
           <label class="field full"><span>禁用场景</span><textarea .value=${component.disabledScenarios} @change=${(event: Event) => this.store.updateComponent({ disabledScenarios: (event.currentTarget as HTMLTextAreaElement).value })}></textarea></label>
         </div>
@@ -341,6 +427,7 @@ export class SpecA11yWorkbench extends LitElement {
       <section class="panel">
         <div class="property-head">
           <h2>关联示例</h2>
+          ${this.ownerTag(component, 'examples')}
           <sp-button size="s" variant="secondary" @click=${() => this.store.addExample()}>新增示例</sp-button>
         </div>
         <div class="example-list">
@@ -389,15 +476,86 @@ export class SpecA11yWorkbench extends LitElement {
       <section class="panel">
         <div class="property-head">
           <h2>版本与迁移</h2>
-          <sp-button size="s" variant="secondary" @click=${() => this.store.createSnapshot('历史面板保存')}>保存当前版本</sp-button>
+          <sp-button size="s" variant="secondary" @click=${() => { if (this.store.createSnapshot('历史面板保存')) this.flash('版本已保存'); }}>保存当前版本</sp-button>
         </div>
         <p>当前为 r${component.revision}。最近快照：${snapshot ? `r${snapshot.revision} · ${new Date(snapshot.savedAt).toLocaleString('zh-CN')}` : '暂无'}。</p>
         ${snapshot ? html`
           <h3>与最近快照的差异</h3>
           ${rows.length ? html`<div class="diff">${rows.map((row) => html`<div class="diff-row"><b>${row.field}</b><span class="before">- ${row.before || '（空）'}</span><br /><span class="after">+ ${row.after || '（空）'}</span></div>`)}</div>` : html`<div class="issue info">当前内容与最近快照一致。</div>`}
         ` : html`<div class="empty">保存一次版本后即可比较字段、属性和示例变化。</div>`}
-        ${this.hasStaleExamples(component) ? html`<div class="issue warning" style="margin-top: 14px"><strong>检测到待迁移示例</strong>迁移会保留代码内容，清理已删除属性引用并更新契约版本。<br /><button @click=${() => this.store.migrateExamples()}>立即迁移</button></div>` : nothing}
+        ${this.hasStaleExamples(component) ? html`<div class="issue warning" style="margin-top: 14px"><strong>检测到待迁移示例</strong>迁移会保留代码内容，清理已删除属性引用并更新契约版本。<br /><button @click=${() => { if (this.store.migrateExamples()) this.flash('示例已迁移到当前契约'); }}>立即迁移</button></div>` : nothing}
       </section>
+    `;
+  }
+
+  private renderRevision(component: ComponentSpec): TemplateResult {
+    const revision = component.pendingRevision;
+    const auditEntries = this.store.state.auditLog.filter((entry) => entry.componentId === component.id);
+    return html`
+      <section class="panel" aria-label="待审修订">
+        <div class="property-head"><h2>待审修订</h2></div>
+        ${revision ? this.renderRevisionDetail(component, revision) : html`
+          <div class="empty">当前没有待审修订。非责任组修改组件、属性、无障碍说明或示例时，会自动生成修订草稿，两个责任组确认后才能发布。</div>
+        `}
+      </section>
+      <section class="panel" style="margin-top: 16px" aria-label="操作留痕">
+        <div class="property-head"><h2>操作留痕</h2></div>
+        ${auditEntries.length ? html`
+          <div class="audit-list">
+            ${auditEntries.map((entry) => html`
+              <div class="audit-entry ${entry.action}">
+                <span class="audit-meta">${new Date(entry.at).toLocaleString('zh-CN')} · ${entry.team === 'system' ? '系统' : TEAM_LABELS[entry.team]} · ${this.auditLabel(entry.action)}</span>
+                <span>${entry.detail}</span>
+              </div>
+            `)}
+          </div>
+        ` : html`<div class="empty">暂无留痕记录。</div>`}
+      </section>
+    `;
+  }
+
+  private renderRevisionDetail(component: ComponentSpec, revision: PendingRevision): TemplateResult {
+    const valid = validConfirmations(revision);
+    const confirmedTeams = new Set(valid.map((item) => item.team));
+    const currentTeam = this.store.state.currentTeam;
+    const alreadyConfirmed = confirmedTeams.has(currentTeam);
+    const publishable = canPublish(revision);
+    return html`
+      <div class="revision-meta">
+        <span class="pill review">待确认</span>
+        <span>${TEAM_LABELS[revision.proposer]} 发起 · ${new Date(revision.createdAt).toLocaleString('zh-CN')}</span>
+        <span>基线 r${revision.baseRevision} · 契约 ${revision.contractHash}</span>
+      </div>
+      <h3>改动内容（${revision.changes.length} 项）</h3>
+      ${revision.changes.length ? html`
+        <div class="diff">
+          ${revision.changes.map((change) => html`
+            <div class="diff-row">
+              <b>${SECTION_LABELS[change.section]} · ${fieldLabel(change.field)}</b>
+              <span class="before">- ${change.before || '（空）'}</span><br />
+              <span class="after">+ ${change.after || '（空）'}</span>
+            </div>
+          `)}
+        </div>
+      ` : html`<div class="issue info">草稿与当前内容一致。</div>`}
+      <h3>责任组确认（两个责任组确认后才能发布）</h3>
+      <div class="confirm-list">
+        ${revision.requiredTeams.map((team) => {
+          const confirmation = valid.find((item) => item.team === team);
+          return html`
+            <div class="confirm-row ${confirmation ? 'done' : ''}">
+              <span>${confirmation ? '✅' : '⬜'} ${TEAM_LABELS[team]}</span>
+              <span>${confirmation ? `已于 ${new Date(confirmation.at).toLocaleString('zh-CN')} 确认` : '待确认'}</span>
+            </div>
+          `;
+        })}
+      </div>
+      <p class="hint">确认与当前属性契约（${revision.contractHash}）绑定；契约一旦更新，已有确认立即失效并重算，依赖示例不沿用旧结论。</p>
+      <div class="actions">
+        <sp-button variant="secondary" ?disabled=${alreadyConfirmed} @click=${() => this.store.confirmRevision(component.id)}>以${TEAM_LABELS[currentTeam]}确认</sp-button>
+        <sp-button variant="accent" ?disabled=${!publishable} @click=${() => this.store.publishRevision(component.id)}>发布修订</sp-button>
+        <sp-button variant="negative" @click=${() => this.store.discardRevision(component.id)}>撤销修订</sp-button>
+      </div>
     `;
   }
 
@@ -451,17 +609,32 @@ export class SpecA11yWorkbench extends LitElement {
     return { draft: '草稿', review: '待审', published: '已发布' }[status];
   }
 
+  private auditLabel(action: AuditAction): string {
+    const labels: Record<AuditAction, string> = {
+      propose: '提交修订',
+      confirm: '确认',
+      invalidate: '确认失效',
+      publish: '发布',
+      discard: '撤销修订',
+      'direct-edit': '直接修改',
+      rollback: '失败回滚',
+      'migrate-owner': '补默认归属'
+    };
+    return labels[action];
+  }
+
   private async copy(value: string) {
     try {
       await navigator.clipboard.writeText(value);
       this.flash('代码已复制');
     } catch {
-      this.flash('复制失败，请手动选择代码');
+      this.flash('复制失败，请手动选择代码', 'negative');
     }
   }
 
-  private flash(message: string) {
+  private flash(message: string, variant: 'positive' | 'negative' = 'positive') {
     this.toast = message;
+    this.toastVariant = variant;
     if (this.toastTimer) window.clearTimeout(this.toastTimer);
     this.toastTimer = window.setTimeout(() => { this.toast = ''; }, 3000);
   }

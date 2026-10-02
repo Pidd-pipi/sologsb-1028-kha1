@@ -1,8 +1,8 @@
-import type { ComponentSnapshot, ComponentSpec, DiffRow } from './types';
+import type { ComponentContent, ComponentSnapshot, ComponentSpec, DiffRow } from './types';
 
-const selectedFields: Array<Exclude<keyof ComponentSpec, 'snapshots'>> = [
+const selectedFields = [
   'name', 'category', 'status', 'purpose', 'usage', 'states', 'keyboardBehavior', 'screenReader', 'disabledScenarios'
-];
+] as const satisfies ReadonlyArray<keyof ComponentContent>;
 
 const format = (value: unknown): string => {
   if (Array.isArray(value)) return value.map((item) => JSON.stringify(item)).join('\n');
